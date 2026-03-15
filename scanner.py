@@ -150,11 +150,17 @@ def send_alert(new_crls, status_changes):
 
 def upsert_state(supabase, all_parsed):
     """Upsert all current records into Supabase."""
-    print(f"\nUpserting {len(all_parsed)} records to Supabase...")
-    # Supabase upsert in batches of 500
+    # Deduplicate — FDA has duplicate app_number+letter_date combos
+    seen = {}
+    for rec in all_parsed:
+        key = f"{rec['application_number']}|{rec['letter_date']}"
+        seen[key] = rec  # last one wins
+    deduped = list(seen.values())
+
+    print(f"\nUpserting {len(deduped)} unique records to Supabase...")
     batch_size = 500
-    for i in range(0, len(all_parsed), batch_size):
-        batch = all_parsed[i : i + batch_size]
+    for i in range(0, len(deduped), batch_size):
+        batch = deduped[i : i + batch_size]
         supabase.table("crl_state").upsert(
             batch, on_conflict="application_number,letter_date"
         ).execute()
