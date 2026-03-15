@@ -7,7 +7,6 @@ Sends alerts to n8n webhook, stores state in Supabase.
 """
 
 import os
-import json
 import requests
 from supabase import create_client
 
@@ -109,37 +108,46 @@ def diff_records(fda_records, existing_rows):
 
 
 def send_alert(new_crls, status_changes):
-    """POST alert payload to n8n webhook."""
+    """POST alert payload to n8n webhook with pre-formatted email."""
+    # Build subject
+    parts = []
+    if new_crls:
+        parts.append(f"{len(new_crls)} New CRL(s)")
+    if status_changes:
+        parts.append(f"{len(status_changes)} Status Change(s)")
+    subject = f"FDA CRL Alert — {', '.join(parts)}"
+
+    # Build HTML body
+    body = "<h2>FDA CRL Alert</h2>"
+
+    if new_crls:
+        body += "<h3>New Complete Response Letters</h3>"
+        for c in new_crls:
+            pdf_url = f"{PDF_BASE_URL}/{c['file_name']}" if c["file_name"] else ""
+            body += f"<p>"
+            body += f"<b>{c['application_number']}</b> — {c['company_name']}<br/>"
+            body += f"Date: {c['letter_date']}<br/>"
+            body += f"Status: {c['approval_status']}<br/>"
+            if pdf_url:
+                body += f'<a href="{pdf_url}">View PDF</a>'
+            body += "</p>"
+
+    if status_changes:
+        body += "<h3>Status Changes</h3>"
+        for c in status_changes:
+            body += f"<p>"
+            body += f"<b>{c['application_number']}</b> — {c['company_name']}<br/>"
+            body += f"Date: {c['letter_date']}<br/>"
+            body += f"{c['old_status']} → {c['new_status']}"
+            body += "</p>"
+
     payload = {
-        "new_crls": [
-            {
-                "application_number": c["application_number"],
-                "company_name": c["company_name"],
-                "letter_date": c["letter_date"],
-                "approval_status": c["approval_status"],
-                "letter_type": c["letter_type"],
-                "pdf_url": f"{PDF_BASE_URL}/{c['file_name']}" if c["file_name"] else "",
-            }
-            for c in new_crls
-        ],
-        "status_changes": [
-            {
-                "application_number": c["application_number"],
-                "company_name": c["company_name"],
-                "letter_date": c["letter_date"],
-                "old_status": c["old_status"],
-                "new_status": c["new_status"],
-            }
-            for c in status_changes
-        ],
-        "summary": {
-            "new_crl_count": len(new_crls),
-            "status_change_count": len(status_changes),
-        },
+        "email_subject": subject,
+        "email_body": body,
     }
 
     print(f"\nSending alert to n8n...")
-    print(f"  Payload: {json.dumps(payload, indent=2)}")
+    print(f"  Subject: {subject}")
 
     if N8N_WEBHOOK_URL:
         resp = requests.post(N8N_WEBHOOK_URL, json=payload, timeout=30)
