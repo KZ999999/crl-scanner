@@ -1,0 +1,14 @@
+services:
+  - type: cron
+    name: crl-scanner
+    runtime: python
+    schedule: "*/20 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scanner.py
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      - key: N8N_WEBHOOK_URL
+        sync: false
