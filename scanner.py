@@ -1,13 +1,18 @@
 """
-FDA CRL Scanner — monitors Complete Response Letters every 20 minutes.
+FDA CRL Scanner — monitors Complete Response Letters every 5 minutes.
 Detects:
   1. New CRL records (new application_number + letter_date)
   2. Status flips (Unapproved → Approved)
+
+FILTER: Only alerts on records with letter_date in 2026 or later.
+Old records that FDA updates are still tracked in DB but don't trigger alerts.
+
 Sends alerts to n8n webhook, stores state in Supabase.
 """
 
 import os
 import requests
+from datetime import datetime
 from supabase import create_client
 
 # --- Config ---
@@ -17,6 +22,20 @@ PDF_BASE_URL = "https://download.open.fda.gov/crl"
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 N8N_WEBHOOK_URL = os.environ.get("N8N_WEBHOOK_URL", "")
+
+# Only alert on CRLs from this year onward
+ALERT_YEAR_MIN = 2026
+
+
+def is_current_year(letter_date):
+    """Check if letter_date is from ALERT_YEAR_MIN or later."""
+    if not letter_date:
+        return False
+    try:
+        year = int(letter_date[:4])
+        return year >= ALERT_YEAR_MIN
+    except (ValueError, IndexError):
+        return False
 
 
 def fetch_all_crls():
@@ -78,7 +97,6 @@ def diff_records(fda_records, existing_rows):
     Compare FDA data against stored state.
     Returns (new_crls, status_changes, all_parsed).
     """
-    # Build lookup from existing: key → approval_status
     existing = {}
     for row in existing_rows:
         key = f"{row['application_number']}|{row['letter_date']}"
@@ -94,10 +112,8 @@ def diff_records(fda_records, existing_rows):
         key = f"{parsed['application_number']}|{parsed['letter_date']}"
 
         if key not in existing:
-            # Brand new record
             new_crls.append(parsed)
         elif existing[key] != parsed["approval_status"]:
-            # Status changed
             status_changes.append({
                 **parsed,
                 "old_status": existing[key],
@@ -109,7 +125,6 @@ def diff_records(fda_records, existing_rows):
 
 def send_alert(new_crls, status_changes):
     """POST alert payload to n8n webhook with pre-formatted email."""
-    # Build subject
     parts = []
     if new_crls:
         parts.append(f"{len(new_crls)} New CRL(s)")
@@ -117,7 +132,6 @@ def send_alert(new_crls, status_changes):
         parts.append(f"{len(status_changes)} Status Change(s)")
     subject = f"FDA CRL Alert — {', '.join(parts)}"
 
-    # Build HTML body
     body = "<h2>FDA CRL Alert</h2>"
 
     if new_crls:
@@ -158,11 +172,10 @@ def send_alert(new_crls, status_changes):
 
 def upsert_state(supabase, all_parsed):
     """Upsert all current records into Supabase."""
-    # Deduplicate — FDA has duplicate app_number+letter_date combos
     seen = {}
     for rec in all_parsed:
         key = f"{rec['application_number']}|{rec['letter_date']}"
-        seen[key] = rec  # last one wins
+        seen[key] = rec
     deduped = list(seen.values())
 
     print(f"\nUpserting {len(deduped)} unique records to Supabase...")
@@ -198,20 +211,29 @@ def main():
 
     is_first_run = len(existing_rows) == 0
 
-    print(f"\n--- Results ---")
-    print(f"  New CRLs:        {len(new_crls)}")
-    print(f"  Status changes:  {len(status_changes)}")
-    print(f"  First run:       {is_first_run}")
+    # 5. Filter — only alert on 2026+ records
+    alertable_new = [c for c in new_crls if is_current_year(c["letter_date"])]
+    alertable_changes = [c for c in status_changes if is_current_year(c["letter_date"])]
 
-    # 5. Alert (skip on first run to avoid 418 false alerts)
-    if not is_first_run and (new_crls or status_changes):
-        send_alert(new_crls, status_changes)
+    skipped_new = len(new_crls) - len(alertable_new)
+    skipped_changes = len(status_changes) - len(alertable_changes)
+
+    print(f"\n--- Results ---")
+    print(f"  New CRLs:           {len(new_crls)} ({skipped_new} skipped — pre-{ALERT_YEAR_MIN})")
+    print(f"  Status changes:     {len(status_changes)} ({skipped_changes} skipped — pre-{ALERT_YEAR_MIN})")
+    print(f"  Alertable new:      {len(alertable_new)}")
+    print(f"  Alertable changes:  {len(alertable_changes)}")
+    print(f"  First run:          {is_first_run}")
+
+    # 6. Alert (only 2026+ records, skip first run)
+    if not is_first_run and (alertable_new or alertable_changes):
+        send_alert(alertable_new, alertable_changes)
     elif is_first_run:
         print("\n  First run — seeding database, no alerts sent.")
     else:
-        print("\n  No changes detected.")
+        print("\n  No alertable changes detected.")
 
-    # 6. Upsert all records
+    # 7. Upsert ALL records (including old ones for tracking)
     upsert_state(supabase, all_parsed)
 
     print("\n=== Done ===\n")
