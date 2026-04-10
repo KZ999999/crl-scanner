@@ -32,7 +32,15 @@ def is_current_year(letter_date):
     if not letter_date:
         return False
     try:
-        year = int(letter_date[:4])
+        # Handle MM/DD/YYYY format (FDA standard)
+        if '/' in letter_date:
+            year = int(letter_date.split('/')[-1])
+        # Handle YYYY-MM-DD format
+        elif '-' in letter_date:
+            year = int(letter_date.split('-')[0])
+        # Handle YYYYMMDD format
+        else:
+            year = int(letter_date[:4])
         return year >= ALERT_YEAR_MIN
     except (ValueError, IndexError):
         return False
